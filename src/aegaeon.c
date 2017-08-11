@@ -34,8 +34,19 @@ mowgli_eventloop_t *aegaeon_wait;
 
  */
 
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <openssl/ssl.h>
+#include <openssl/evp.h>
+#include <fcntl.h>
+#include <sys/errno.h>
+#include <netinet/in.h>
+#include <libmowgli-2/mowgli.h>
+#include <uthash.h>
+#include <netdb.h>
+
 typedef struct {
-	char *verify_script;
+	Tcl_Obj *verify_script; // of type list, probably
 } aegaeon_ssldata;
 
 void aegaeon_react (mowgli_eventloop_t *el,
@@ -43,33 +54,73 @@ void aegaeon_react (mowgli_eventloop_t *el,
 	void *userdata)
 {
 	aegaeon_userdata *ud = (aegaeon_userdata *)userdata;
-	char *tcl_eventfunc;
+	Tcl_Obj *tcl_eventfunc;
 
-	switch (dir) {
+	switch (direction) {
 		case MOWGLI_EVENTLOOP_IO_READ:
 			tcl_eventfunc = ud->read;
 			break;
 		case MOWGLI_EVENTLOOP_IO_WRITE:
 			tcl_eventfunc = ud->write;
 			break;
+		case MOWGLI_EVENTLOOP_IO_ERROR:
+			tcl_eventfunc = ud->error;
+			break;
 	}
 
-	if (tcl_eventfunc != NULL) Tcl_Eval(ud->interp, tcl_eventfunc);
+	// We expect the user to have used [list].
+
+	if (tcl_eventfunc != NULL) Tcl_EvalObjEx(ud->interp, tcl_eventfunc, TCL_EVAL_GLOBAL);
+};
+
+void aegaeon_tick (void *userdata)
+{
+	aegaeon_userdata *ud = (aegaeon_userdata *)userdata;
+	Tcl_Obj *tcl_eventfunc = Tcl_DuplicateObj(ud->read);
+
+	// We expect the user to have used [list], but will append ->write for them.
+
+	Tcl_ListObjAppendElement(ud->interp, tcl_eventfunc, ud->write);
+
+	if (tcl_eventfunc != NULL) Tcl_EvalObjEx(ud->interp, tcl_eventfunc, TCL_EVAL_GLOBAL);
+
+	if (*(int *)(ud->privdata) == 0) {
+		Tcl_DecrRefCount(ud->read);
+		Tcl_DecrRefCount(ud->write);
+		free(ud->privdata);
+	};
 };
 
 #ifdef HAVE_OPENSSL
 
-int aegaeon_verify_callback (int wavepast, void *context)
+int aegaeon_verify_callback (int wavepast, X509_STORE_CTX *context)
 {
 	// the verify script will be concatenated with the wavepast.
 	// it won't be given any more info, just whether or not the cert
-	// was deemed valid by OpenSSL, the cert itself, and a
-	// symbolic name that will be listed in the docs that explains the
-	// matter.
-	char *script = malloc(769);
-	memset(script, 0, 769);
-	mowgli_vio_t *vio = SSL_CTX_get_ex_data(ctx, sslctx_appdata);
+	// was deemed valid by OpenSSL, and a handle to the x509 itself, and
+	// a number explaining the situation.
+	SSL *sslh = X509_STORE_CTX_get_ex_data(context, SSL_get_ex_data_X509_STORE_CTX_idx());
+	
+	mowgli_vio_t *vio = SSL_CTX_get_ex_data(context, sslctx_appdata);
+	char *sarg[3];
+	Tcl_Obj *scr = Tcl_DuplicateObj((aegaeon_userdata *)(vio->userdata)->privdata)->verify_script;
 
-	snprintf(script, 768, "%s %d");
+	sarg[0] = malloc(26);
+	memset(sarg[0], 0, 26);
+	snprintf (sarg[0], 25, "%d", wavepast);
+
+	sarg[1] = malloc(41);
+	memset(sarg[1], 0, 41);
+	snprintf (sarg[1], 40, "0x%lx", (unsigned long *)context);
+
+	sarg[2] = malloc(26);
+	memset(sarg[2], 0, 26);
+	snprintf (sarg[2], 25, "%d", X509_STORE_CTX_get_error);
+
+	Tcl_ListObjAppendElement((aegaeon_userdata *)(vio->userdata)->interp, scr, Tcl_NewStringObj(sarg[0], strlen(sarg[0])));
+	Tcl_ListObjAppendElement((aegaeon_userdata *)(vio->userdata)->interp, scr, Tcl_NewStringObj(sarg[1], strlen(sarg[1])));
+	Tcl_ListObjAppendElement((aegaeon_userdata *)(vio->userdata)->interp, scr, Tcl_NewStringObj(sarg[2], strlen(sarg[2])));
+
+	Tcl_EvalObjEx(ud->interp, scr, TCL_EVAL_GLOBAL);
 }
 #endif

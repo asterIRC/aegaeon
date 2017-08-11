@@ -30,17 +30,26 @@ if {0} {
  */
 }
 
+critcl::source ../critflags.tcl
+
+critcl::cflags -g -fPIC -DPIC -std=gnu99 -I /usr/home/hadron/src/aegaeon/libmowgli-2/run/include
+critcl::ldflags -lssl
+
+critcl::cheaders /usr/home/hadron/src/aegaeon/libmowgli-2/run/include
+
 critcl::ccode {
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <openssl/ssl.h>
+#include <openssl/evp.h>
 #include <fcntl.h>
 #include <sys/errno.h>
 #include <netinet/in.h>
-#include <mowgli.h>
+#include <libmowgli-2/mowgli.h>
 #include <uthash.h>
 #include <netdb.h>
 
-int sslctx_appdata;
+int sslctx_appdata = -2;
 
 typedef struct {
 	int fd;
@@ -50,67 +59,36 @@ typedef struct {
 
 typedef struct {
 	Tcl_Interp *interp;
-	char* read; // Also for the accept callback for [aegaeon vio-server]
-	char* write;
-	char* error;
-	void *privdata;
+	Tcl_Obj* read; // Also for the accept callback for [aegaeon vio-server]
+	// And for the time callback for secondly timers
+	Tcl_Obj* write; // Is the "arg" for the timer callback
+	Tcl_Obj* error;
+	void *privdata; // For the timer, is an int* 1 if the timer was once
+	                // and 0 otherwise
 } aegaeon_userdata;
 
 #include <aegaeon.c>
 mowgli_vio_evops_t aegaeon_evops = {
-	.read_cb = aegaeon_react;
-	.write_cb = aegaeon_react;
+	.read_cb = &aegaeon_react,
+	.write_cb = &aegaeon_react
 };
 
 mowgli_eventloop_t *aegaeon_wait;
 }
 critcl::buildrequirement {
-	package require critcl::emap
+	package require critcl::enum
 }
 
-critcl::emap protofamily {
-PF_LOCAL PF_LOCAL
-PF_UNIX PF_UNIX
-PF_INET PF_INET
-PF_INET6 PF_INET6
-PF_ROUTE PF_ROUTE
-PF_LINK PF_LINK
-PF_KEY PF_KEY
-PF_NATM PF_NATM
-PF_NETGRAPH PF_NETGRAPH
-PF_IEEE80211 PF_IEEE80211
-PF_BLUETOOTH PF_BLUETOOTH
-PF_INET_SDP PF_INET_SDP
-PF_INET6_SDP PF_INET6_SDP
-} -nocase
+::critcl::cdefines [list PF_* AF_* IPPROTO_* SOCK_* X509_V_*]
 
-critcl::emap socktype {
-SOCK_STREAM SOCK_STREAM
-SOCK_DGRAM SOCK_DGRAM
-SOCK_RAW SOCK_RAW
-SOCK_RDM SOCK_RDM
-SOCK_SEQPACKET SOCK_SEQPACKET
-} -nocase
-
-critcl::emap protonum {
-IPPROTO_IP IPPROTO_IP
-IPPROTO_ICMP IPPROTO_ICMP
-IPPROTO_TCP IPPROTO_TCP
-IPPROTO_UDP IPPROTO_UDP
-IPPROTO_IPV6 IPPROTO_IPV6
-IPPROTO_SCTP IPPROTO_SCTP
-} -nocase
-
-namespace eval ::aegaeon {
-
-critcl::cproc csocket {protofamily domain socktype type protonum protocol} int {
+critcl::cproc csocket {int domain int type int protocol} int {
 	return socket(domain, type, protocol);
 }
 
 
 critcl::cproc cconnect {int socket char* hostname char* servname
-                       int hint_flags protofamily hint_family domain hint_socktype
-                       protonum hint_protocol} int {
+                       int hint_flags int hint_family int hint_socktype
+                       int hint_protocol} int {
 	//We have to somehow convert this mess of stuff into a connect() call.
 	if (socket == -1) return -16;
 
@@ -119,7 +97,7 @@ critcl::cproc cconnect {int socket char* hostname char* servname
 
 	error = connerror = 0;
 
-	hints = (struct addrinfo *)malloc(sizeof((struct addrinfo)));
+	hints = (struct addrinfo *)malloc(sizeof(struct addrinfo));
 	hints->ai_family = hint_family;
 	hints->ai_socktype = hint_socktype;
 	hints->ai_protocol = hint_protocol;
@@ -128,7 +106,7 @@ critcl::cproc cconnect {int socket char* hostname char* servname
 	if (error) return (0 - error);
 
 	for (r = resultnull; r != NULL; r = r->ai_next) {
-		if (connect(socket, res->ai_addr, res->ai_addrlen) != 0) {
+		if (connect(socket, r->ai_addr, r->ai_addrlen) != 0) {
 			connerror = errno;
 			continue;
 		}
@@ -139,8 +117,8 @@ critcl::cproc cconnect {int socket char* hostname char* servname
 	freeaddrinfo(resultnull);
 
 	if (error || connerror) {
-		return 
-	}
+		return (0 - (error | (connerror << 8)));
+	} else return socket;
 
 }
 
@@ -148,8 +126,8 @@ critcl::cproc cconnect {int socket char* hostname char* servname
 #// int, negative if error, passed socket if success
 
 critcl::cproc cbind {int socket char* hostname char* servname
-                     int hint_flags protofamily hint_family domain hint_socktype
-                     protonum hint_protocol} int {
+                     int hint_flags int hint_family int hint_socktype
+                     int hint_protocol} int {
 	//We have to somehow convert this mess of stuff into a connect() call.
 	if (socket == -1) return -16;
 
@@ -158,7 +136,7 @@ critcl::cproc cbind {int socket char* hostname char* servname
 
 	error = binderror = 0;
 
-	hints = (struct addrinfo *)malloc(sizeof((struct addrinfo)));
+	hints = (struct addrinfo *)malloc(sizeof(struct addrinfo));
 	hints->ai_family = hint_family;
 	hints->ai_socktype = hint_socktype;
 	hints->ai_protocol = hint_protocol;
@@ -167,19 +145,19 @@ critcl::cproc cbind {int socket char* hostname char* servname
 	if (error) return (0 - error);
 
 	for (r = resultnull; r != NULL; r = r->ai_next) {
-		if (bind(socket, res->ai_addr, res->ai_addrlen) != 0) {
+		if (bind(socket, r->ai_addr, r->ai_addrlen) != 0) {
 			binderror = errno;
 			continue;
 		}
 
-		break
+		break;
 	}
 
 	freeaddrinfo(resultnull);
 
 	if (error || binderror) {
-		return (0 - (error | (connerror << 8)));
-	}	return socket;
+		return (0 - (error | (binderror << 8)));
+	} else return socket;
 
 }
 
@@ -192,7 +170,7 @@ critcl::cproc cbind {int socket char* hostname char* servname
 critcl::cproc crecv {Tcl_Interp* interp int fd char* stopchars int maxlen
                      object name1 object name2} int {
 	// Very slow method
-	int continue, i, error, readbytes;
+	int i, error, readbytes;
 	if (maxlen == 0) maxlen = 16384;
 	if (maxlen > 262144) maxlen = 262144; // Clamp to 262kB
 	unsigned char *output = Tcl_Alloc(maxlen+1);
@@ -213,9 +191,9 @@ critcl::cproc crecv {Tcl_Interp* interp int fd char* stopchars int maxlen
 				readbytes) > maxlen) ?
 					(maxlen - (strlen(output) + readbytes)) :
 					readbytes);
-				break
+				break;
 		}
-		if (!continue && !error) {
+		if (!error) {
 			break;
 		}
 
@@ -258,14 +236,76 @@ critcl::cproc csend {Tcl_Interp* interp int fd object stringtosend} int {
 # inputs: none.
 # outputs: the address of whatever funky struct mowgli is doing.
 
-namespace eval ::aegaeon::mowgli {
-
 critcl::cproc eventloop_create {} dstring {
 	char *o = Tcl_Alloc(40);
 	memset(o, 0, 40);
 	mowgli_eventloop_t *el = mowgli_eventloop_create();
 	sprintf(o, "0x%lx", el);
 	return o;
+}
+
+critcl::cproc eventloop_crank {char* elptrs} void {
+	unsigned long elptr = strtoul(elptrs, NULL, 16);
+	mowgli_eventloop_t *el = (mowgli_eventloop_t *) elptr;
+
+	mowgli_eventloop_run_once(el);
+}
+
+critcl::cproc eventloop_fire {char* elptrs} void {
+	unsigned long elptr = strtoul(elptrs, NULL, 16);
+	mowgli_eventloop_t *el = (mowgli_eventloop_t *) elptr;
+
+	mowgli_eventloop_run(el);
+}
+
+critcl::cproc timer_add {Tcl_Interp* interp char* elptrs char* name
+                         object script object arg int every} dstring {
+	char *o = Tcl_Alloc(40);
+	memset(o, 0, 40);
+
+	unsigned long elptr = strtoul(elptrs, NULL, 16);
+	mowgli_eventloop_t *el = (mowgli_eventloop_t *) elptr;
+
+	aegaeon_userdata *ud = malloc(sizeof(aegaeon_userdata));
+	memset (ud, 0, sizeof(aegaeon_userdata));
+
+	ud->interp = interp;
+
+	ud->read = script;
+	Tcl_IncrRefCount(script);
+
+	ud->write = arg;
+	Tcl_IncrRefCount(arg);
+
+	ud->privdata = malloc(sizeof(int));
+	*(int *)(ud->privdata) = 1;
+
+	mowgli_eventloop_timer_t *elt = mowgli_timer_add(el, name,
+	                  &aegaeon_tick, ud, every);
+	sprintf(o, "0x%lx", elt);
+	return o;
+}
+
+critcl::cproc mowgli_after {Tcl_Interp* interp char* elptrs char* name
+                         object script object arg int after} void {
+	unsigned long elptr = strtoul(elptrs, NULL, 16);
+	mowgli_eventloop_t *el = (mowgli_eventloop_t *) elptr;
+
+	aegaeon_userdata *ud = malloc(sizeof(aegaeon_userdata));
+	memset (ud, 0, sizeof(aegaeon_userdata));
+
+	ud->interp = interp;
+
+	ud->read = script;
+	Tcl_IncrRefCount(script);
+
+	ud->write = arg;
+	Tcl_IncrRefCount(arg);
+
+	ud->privdata = malloc(sizeof(int));
+	*(int *)(ud->privdata) = 0;
+
+	mowgli_timer_add_once(el, name, &aegaeon_tick, ud, after);
 }
 
 # api difference: no userdata!
@@ -277,12 +317,15 @@ critcl::cproc vio_create {Tcl_Interp* interp} dstring {
 	ud = malloc(sizeof(aegaeon_userdata));
 	memset(ud, 0, sizeof(aegaeon_userdata));
 	ud->interp = interp;
-	mowgli_vio_t *el = mowgli_vio_create(ud);
-	sprintf(o, "0x%lx", el);
+	ud->read = NULL;
+	ud->write = NULL;
+	ud->error = NULL;
+	mowgli_vio_t *vio = mowgli_vio_create(ud);
+	sprintf(o, "0x%lx", vio);
 	return o;
 }
 
-critcl::cproc vio_tls_socket {char* vptrs protofamily family socktype type protonum proto} int {
+critcl::cproc vio_tls_socket {char* vptrs int family int type int proto} int {
 #ifndef HAVE_OPENSSL
 	return -255;
 #endif
@@ -291,17 +334,83 @@ critcl::cproc vio_tls_socket {char* vptrs protofamily family socktype type proto
 	aegaeon_ssldata *verify_script = malloc(sizeof(aegaeon_ssldata));
 	memset(verify_script, 0, sizeof(aegaeon_ssldata));
 
-	(aegaeon_userdata *)(vio->userdata)->privdata = (void *)verify_script;
+	((aegaeon_userdata *)(vio->userdata))->privdata = (void *)verify_script;
 
 	mowgli_vio_openssl_setssl(vio, NULL, NULL);
 	if (vio->ops->socket(vio, family, type, proto) != 0) return 1;
 	
 }
 
-critcl::cproc vio_socket {char* vptrs protofamily family socktype type protonum proto} int {
+critcl::cproc vio_socket {char* vptrs int family int type int proto} int {
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 	return vio->ops->socket(vio, family, type, proto);
+}
+
+# vio_fileevent_readable/writable - only part of the tcl part
+
+critcl::cproc vio_fileevent_readable_set {char* vptrs object cb} void {
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+
+	((aegaeon_userdata *)(vio->userdata))->read = cb;
+	Tcl_IncrRefCount(cb);
+};
+
+critcl::cproc vio_fileevent_writable_set {char* vptrs object cb} void {
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+
+	((aegaeon_userdata *)(vio->userdata))->write = cb;
+	Tcl_IncrRefCount(cb);
+};
+
+# Probably not used in mowgli, but we have space for it :)
+
+critcl::cproc vio_fileevent_error_set {char* vptrs object cb} void {
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+
+	((aegaeon_userdata *)(vio->userdata))->error = cb;
+	Tcl_IncrRefCount(cb);
+};
+
+## unset
+
+critcl::cproc vio_fileevent_readable_unset {char* vptrs} void {
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+
+	Tcl_DecrRefCount(((aegaeon_userdata *)(vio->userdata))->read);
+	((aegaeon_userdata *)(vio->userdata))->read = NULL;
+};
+
+critcl::cproc vio_fileevent_writable_unset {char* vptrs} void {
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+
+	Tcl_DecrRefCount(((aegaeon_userdata *)(vio->userdata))->write);
+	((aegaeon_userdata *)(vio->userdata))->write = NULL;
+};
+
+# Probably not used in mowgli, but we have space for it :)
+
+critcl::cproc vio_fileevent_error_unset {char* vptrs} void {
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+
+	Tcl_DecrRefCount(((aegaeon_userdata *)(vio->userdata))->error);
+	((aegaeon_userdata *)(vio->userdata))->error = NULL;
+};
+
+critcl::cproc vio_eventloop_attach {char* vptrs char* elptrs} void {
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+
+	unsigned long elptr = strtoul(elptrs, NULL, 16);
+	mowgli_eventloop_t *el = (mowgli_eventloop_t *) elptr;
+
+	mowgli_vio_eventloop_attach(vio, el, &aegaeon_evops);
 }
 
 critcl::cproc vio_destroy {char* vptrs} void {
@@ -311,10 +420,81 @@ critcl::cproc vio_destroy {char* vptrs} void {
 	return;
 }
 
-critcl::cproc vio_connect {char *vptrs char* hostname char* servname
-                       int hint_flags protofamily hint_family domain hint_socktype
-                       protonum hint_protocol} int {
+critcl::cproc timer_destroy {char* elptrs char* tptrs} void {
+	unsigned long elptr = strtoul(elptrs, NULL, 16);
+	mowgli_eventloop_t *el = (mowgli_eventloop_t *) elptr;
+
+	unsigned long tptr = strtoul(tptrs, NULL, 16);
+	mowgli_eventloop_timer_t *t = (mowgli_eventloop_timer_t *) tptr;
+
+	mowgli_timer_destroy(el, t);
+	return;
+}
+
+critcl::cproc vio_eventloop_detach {char* vptrs} void {
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+	mowgli_vio_eventloop_detach(vio);
+	return;
+}
+
+critcl::cproc vio_connect {char* vptrs char* hostname char* servname
+                       int hint_flags int hint_family int hint_socktype
+                       int hint_protocol} int {
 	//We have to somehow convert this mess of stuff into an ops->connect() call.
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+#ifdef HAVE_OPENSSL
+	SSL *sslh;
+#endif
+
+	mowgli_vio_sockaddr_t *vsockaddr;
+
+	struct addrinfo hints, *r, *resultnull;
+	int error, connerror;
+
+	error = connerror = 0;
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = hint_family;
+	hints.ai_socktype = hint_socktype;
+	error = getaddrinfo(hostname, servname, &hints, &resultnull);
+
+	if (error) return (0 - error);
+
+	for (r = resultnull; r != NULL; r = r->ai_next) {
+		mowgli_vio_sockaddr_from_struct(vsockaddr, r->ai_addr, r->ai_addrlen);
+
+		if ((connerror = vio->ops->connect(vio, vsockaddr)) != 0) {
+			continue;
+		}
+
+#ifdef HAVE_OPENSSL
+
+		if ((sslh = mowgli_vio_openssl_getsslhandle(vio)) != NULL) {
+			if (sslctx_appdata == -2) SSL_get_new_index(); //Not set yet
+			// Set to verify peer.
+			SSL_set_ex_data(sslh, sslctx_appdata, (void *)vio);
+			SSL_set_verify(sslh, SSL_VERIFY_PEER, &aegaeon_verify_callback);
+		}
+
+#endif
+
+		break;
+	}
+
+	freeaddrinfo(resultnull);
+
+	if (error || connerror) {
+		return (0 - (error | (connerror << 8)));
+	} else return 0;
+
+}
+
+critcl::cproc vio_bind {char* vptrs char* hostname char* servname
+                       int hint_flags int hint_family int hint_socktype
+                       int hint_protocol} int {
+	//We have to somehow convert this mess of stuff into an ops->bind() call.
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 #ifdef HAVE_OPENSSL
@@ -328,26 +508,26 @@ critcl::cproc vio_connect {char *vptrs char* hostname char* servname
 
 	error = connerror = 0;
 
-	hints = (struct addrinfo *)malloc(sizeof((struct addrinfo)));
+	hints = (struct addrinfo *)malloc(sizeof(struct addrinfo));
 	hints->ai_family = hint_family;
 	hints->ai_socktype = hint_socktype;
-	hints->ai_protocol = hint_protocol;
 	error = getaddrinfo(hostname, servname, hints, &resultnull);
 
 	if (error) return (0 - error);
 
 	for (r = resultnull; r != NULL; r = r->ai_next) {
-		mowgli_vio_sockaddr_from_struct(vsockaddr, res->ai_addr, res->ai_addrlen);
+		mowgli_vio_sockaddr_from_struct(vsockaddr, r->ai_addr, r->ai_addrlen);
 
-		if (vio->ops->connect(vio, vsockaddr) != 0) {
-			connerror = errno;
+		if ((connerror = vio->ops->bind(vio, vsockaddr)) != 0) {
 			continue;
 		}
 
 #ifdef HAVE_OPENSSL
 
 		if ((ctx = mowgli_vio_openssl_getsslcontext(vio)) != NULL) {
-			// Set to verify peer.
+			if (sslctx_appdata == -2) SSL_CTX_get_new_index(); //Not set yet
+			// Set to verify peer. Script set will decide whether
+			// to wave past.
 			SSL_CTX_set_ex_data(ctx, sslctx_appdata, (void *)vio);
 			SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, &aegaeon_verify_callback);
 		}
@@ -360,17 +540,17 @@ critcl::cproc vio_connect {char *vptrs char* hostname char* servname
 	freeaddrinfo(resultnull);
 
 	if (error || connerror) {
-		return 
-	}
+		return (0 - (error | (connerror << 8)));
+	} else return 0;
 
 }
 
-critcl::cproc vio_recv {Tcl_Interp* interp char *vptrs int maxlen
+critcl::cproc vio_recv {Tcl_Interp* interp char* vptrs int maxlen
                      object name1 object name2} int {
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 
-	int continue, i, error, readbytes;
+	int i, error, readbytes;
 	if (maxlen == 0) maxlen = 16384;
 	if (maxlen > 262144) maxlen = 262144; // Clamp to 262kB
 	unsigned char *output = Tcl_Alloc(maxlen+1);
@@ -391,9 +571,9 @@ critcl::cproc vio_recv {Tcl_Interp* interp char *vptrs int maxlen
 				readbytes) > maxlen) ?
 					(maxlen - (strlen(output) + readbytes)) :
 					readbytes);
-				break
+				break;
 		}
-		if (!continue && !error) {
+		if (!error) {
 			break;
 		}
 
@@ -414,7 +594,7 @@ critcl::cproc vio_send {Tcl_Interp* interp char* vptrs object stringtosend} int 
 	int len, error;
 	unsigned char *input = Tcl_GetByteArrayFromObj(stringtosend, &len);
 
-	switch (vio->ops->write(fd, input, len)) {
+	switch (vio->ops->write(vio, input, len)) {
 		case 0:
 			error = -1;
 			break;
@@ -428,20 +608,4 @@ critcl::cproc vio_send {Tcl_Interp* interp char* vptrs object stringtosend} int 
 
 	return (error == 0) ? 0 : 0 - error;
 }
-
-
-namespace export *
-namespace ensemble create
-
-}
-
-namespace export *
-namespace ensemble create
-
-}
-
-critcl::cproc getnewappdata {} void {
-	sslctx_appdata = SSL_CTX_get_new_index();
-}
-
-getnewappdata
+critcl::load
