@@ -45,6 +45,21 @@ mowgli_eventloop_t *aegaeon_wait;
 #include <uthash.h>
 #include <netdb.h>
 
+extern void mowgli_log_bootstrap(void);
+extern void mowgli_node_bootstrap(void);
+extern void mowgli_queue_bootstrap(void);
+extern void mowgli_object_class_bootstrap(void);
+extern void mowgli_argstack_bootstrap(void);
+extern void mowgli_bitvector_bootstrap(void);
+extern void mowgli_global_storage_bootstrap(void);
+extern void mowgli_hook_bootstrap(void);
+extern void mowgli_random_bootstrap(void);
+extern void mowgli_allocation_policy_bootstrap(void);
+extern void mowgli_allocator_bootstrap(void);
+extern void mowgli_memslice_bootstrap(void);
+extern void mowgli_cacheline_bootstrap(void);
+extern void mowgli_interface_bootstrap(void);
+
 typedef struct {
 	Tcl_Obj *verify_script; // of type list, probably
 } aegaeon_ssldata;
@@ -69,6 +84,8 @@ void aegaeon_react (mowgli_eventloop_t *el,
 	}
 
 	// We expect the user to have used [list].
+
+	write(2, "Calling event function...", strlen("Calling event function..."));
 
 	if (tcl_eventfunc != NULL) Tcl_EvalObjEx(ud->interp, tcl_eventfunc, TCL_EVAL_GLOBAL);
 };
@@ -124,3 +141,9 @@ int aegaeon_verify_callback (int wavepast, X509_STORE_CTX *context)
 	Tcl_EvalObjEx(ud->interp, scr, TCL_EVAL_GLOBAL);
 }
 #endif
+
+void aegaeon_mowgli_log_cb (const char *logline)
+{
+	write(2, logline, strlen(logline));
+	write(2, "\r\n", 2);
+}

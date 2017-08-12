@@ -79,7 +79,7 @@ critcl::buildrequirement {
 	package require critcl::enum
 }
 
-::critcl::cdefines [list PF_* AF_* IPPROTO_* SOCK_* X509_V_*]
+::critcl::cdefines [list PF_* AF_* IPPROTO_* SOCK_* X509_V_* MOWGLI_* SOMAXCONN]
 
 critcl::cproc csocket {int domain int type int protocol} int {
 	return socket(domain, type, protocol);
@@ -337,14 +337,19 @@ critcl::cproc vio_tls_socket {char* vptrs int family int type int proto} int {
 	((aegaeon_userdata *)(vio->userdata))->privdata = (void *)verify_script;
 
 	mowgli_vio_openssl_setssl(vio, NULL, NULL);
-	if (vio->ops->socket(vio, family, type, proto) != 0) return 1;
-	
+	if (vio->ops->socket(vio, family, type, proto) != 0) return 1;	
 }
 
 critcl::cproc vio_socket {char* vptrs int family int type int proto} int {
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 	return vio->ops->socket(vio, family, type, proto);
+}
+
+critcl::cproc vio_listen {char* vptrs int backlog} int {
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+	return vio->ops->listen(vio, backlog);
 }
 
 # vio_fileevent_readable/writable - only part of the tcl part
@@ -564,7 +569,7 @@ critcl::cproc vio_recv {Tcl_Interp* interp char* vptrs int maxlen
 				error = -1;
 				break;
 			case -1:
-				error = errno;
+				error = vio->error.code;
 				break;
 			default:
 				memcpy(output, &obuf, ((strlen(output) +
@@ -576,36 +581,57 @@ critcl::cproc vio_recv {Tcl_Interp* interp char* vptrs int maxlen
 		if (!error) {
 			break;
 		}
-
-		i += readbytes;
 	} while(0);
 
-	Tcl_ObjSetVar2(interp, name1, name2, Tcl_NewByteArrayObj(output, i), 0);
+	Tcl_ObjSetVar2(interp, name1, name2, Tcl_NewByteArrayObj(output, readbytes), 0);
 
-	return (error == 0) ? 0 :
-			(error == -1) ? 1 :
-			0 - error;
+	return readbytes;
 }
 
-critcl::cproc vio_send {Tcl_Interp* interp char* vptrs object stringtosend} int {
+critcl::cproc vio_send {Tcl_Interp* interp char* vptrs char* stringtosend} int {
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 
 	int len, error;
-	unsigned char *input = Tcl_GetByteArrayFromObj(stringtosend, &len);
 
-	switch (vio->ops->write(vio, input, len)) {
-		case 0:
-			error = -1;
-			break;
-		case -1:
-			error = errno;
-			break;
-		default:
-			error = 0;
-			break;
-	}
+	error = vio->ops->write(vio, stringtosend, strlen(stringtosend));
+	return (error == -1) ? vio->error.code : error;
+}
 
-	return (error == 0) ? 0 : 0 - error;
+# Lifted from core/bootstrap.c because we seem to need it
+
+critcl::cproc mowgli_bootstrap {} void {
+	static bool bootstrapped = 0;
+
+	if (bootstrapped)
+		return;
+
+	/* initial bootstrap */
+	mowgli_log_bootstrap();
+	mowgli_node_bootstrap();
+	mowgli_queue_bootstrap();
+	mowgli_object_class_bootstrap();
+	mowgli_argstack_bootstrap();
+	mowgli_bitvector_bootstrap();
+	mowgli_global_storage_bootstrap();
+	mowgli_hook_bootstrap();
+	mowgli_random_bootstrap();
+	mowgli_allocation_policy_bootstrap();
+	mowgli_allocator_bootstrap();
+	mowgli_memslice_bootstrap();
+	mowgli_cacheline_bootstrap();
+	mowgli_interface_bootstrap();
+
+#ifdef _WIN32
+	extern void mowgli_winsock_bootstrap(void);
+
+	mowgli_winsock_bootstrap();
+#endif
+
+	/* now that we're bootstrapped, we can use a more optimised allocator
+	   if one is available. */
+	mowgli_allocator_set_policy(mowgli_allocator_malloc);
+
+	bootstrapped = true;
 }
 critcl::load
