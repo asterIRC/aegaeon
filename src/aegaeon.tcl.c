@@ -15,10 +15,10 @@ if {0} {
  * publish, distribute, sublicense, and/or sell copies of the Software,
  * and to permit persons to whom the Software is furnished to do so,
  * subject to the following conditions:
- * 
+ *
  *  The above copyright notice and this permission notice shall be included
  *  in all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS
  * IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
  * NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
@@ -43,6 +43,7 @@ critcl::ccode {
 #include <openssl/ssl.h>
 #include <openssl/evp.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <sys/errno.h>
 #include <netinet/in.h>
 #include <libmowgli-2/mowgli.h>
@@ -337,7 +338,7 @@ critcl::cproc vio_tls_socket {char* vptrs int family int type int proto} int {
 	((aegaeon_userdata *)(vio->userdata))->privdata = (void *)verify_script;
 
 	mowgli_vio_openssl_setssl(vio, NULL, NULL);
-	if (vio->ops->socket(vio, family, type, proto) != 0) return 1;	
+	if (vio->ops->socket(vio, family, type, proto) != 0) return 1;
 }
 
 critcl::cproc vio_socket {char* vptrs int family int type int proto} int {
@@ -416,6 +417,8 @@ critcl::cproc vio_eventloop_attach {char* vptrs char* elptrs} void {
 	mowgli_eventloop_t *el = (mowgli_eventloop_t *) elptr;
 
 	mowgli_vio_eventloop_attach(vio, el, &aegaeon_evops);
+	MOWGLI_VIO_SETREAD(vio);
+	MOWGLI_VIO_SETWRITE(vio);
 }
 
 critcl::cproc vio_destroy {char* vptrs} void {
@@ -453,7 +456,7 @@ critcl::cproc vio_connect {char* vptrs char* hostname char* servname
 	SSL *sslh;
 #endif
 
-	mowgli_vio_sockaddr_t *vsockaddr;
+	mowgli_vio_sockaddr_t *vsockaddr = malloc(sizeof(mowgli_vio_sockaddr_t));
 
 	struct addrinfo hints, *r, *resultnull;
 	int error, connerror;
@@ -463,9 +466,13 @@ critcl::cproc vio_connect {char* vptrs char* hostname char* servname
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = hint_family;
 	hints.ai_socktype = hint_socktype;
+	hints.ai_protocol = hint_protocol;
 	error = getaddrinfo(hostname, servname, &hints, &resultnull);
 
 	if (error) return (0 - error);
+
+	char *dprlu = malloc(52*sizeof(char));
+	memset(dprlu, 0, 52);
 
 	for (r = resultnull; r != NULL; r = r->ai_next) {
 		mowgli_vio_sockaddr_from_struct(vsockaddr, r->ai_addr, r->ai_addrlen);
@@ -506,7 +513,7 @@ critcl::cproc vio_bind {char* vptrs char* hostname char* servname
 	SSL_CTX *ctx;
 #endif
 
-	mowgli_vio_sockaddr_t *vsockaddr;
+	mowgli_vio_sockaddr_t vsockaddr;
 
 	struct addrinfo *hints, *r, *resultnull;
 	int error, connerror;
@@ -516,14 +523,15 @@ critcl::cproc vio_bind {char* vptrs char* hostname char* servname
 	hints = (struct addrinfo *)malloc(sizeof(struct addrinfo));
 	hints->ai_family = hint_family;
 	hints->ai_socktype = hint_socktype;
+	hints->ai_protocol = hint_protocol;
 	error = getaddrinfo(hostname, servname, hints, &resultnull);
 
 	if (error) return (0 - error);
 
 	for (r = resultnull; r != NULL; r = r->ai_next) {
-		mowgli_vio_sockaddr_from_struct(vsockaddr, r->ai_addr, r->ai_addrlen);
+		mowgli_vio_sockaddr_from_struct(&vsockaddr, r->ai_addr, sizeof(*(r->ai_addr)));
 
-		if ((connerror = vio->ops->bind(vio, vsockaddr)) != 0) {
+		if ((connerror = vio->ops->bind(vio, &vsockaddr)) != 0) {
 			continue;
 		}
 
@@ -596,6 +604,13 @@ critcl::cproc vio_send {Tcl_Interp* interp char* vptrs char* stringtosend} int {
 
 	error = vio->ops->write(vio, stringtosend, strlen(stringtosend));
 	return (error == -1) ? vio->error.code : error;
+}
+
+critcl::cproc vio_strerror {char* vptrs} vstring {
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+
+	return strerror(vio->error.code);
 }
 
 # Lifted from core/bootstrap.c because we seem to need it

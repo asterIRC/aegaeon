@@ -44,6 +44,32 @@ mowgli_eventloop_t *aegaeon_wait;
 #include <libmowgli-2/mowgli.h>
 #include <uthash.h>
 #include <netdb.h>
+extern const char * const sys_errlist[];
+extern const int sys_nerr;
+
+
+// As a temporary measure... A strerror that internally uses strerror_r
+// like the original one does, but tries to be sane about it
+
+char *_strerror(int tryerrlist, int err) {
+	char* errstr = malloc(2048*sizeof(unsigned char));
+
+	strerror_r(err, errstr, 2048);
+	if (errno != EINVAL) return errstr;
+	else if (!tryerrlist) {
+		snprintf(errstr, 2048, "Error %d not translatable. strerror_r gave us nothing to work with!", err);
+		return errstr;
+	} else if (err < sys_nerr) {
+		strlcpy(errstr, sys_errlist[err], 2048);
+	} else {
+		snprintf(errstr, 2048, "Error %d not translatable. neither strerror_r or sys_errlist gave us anything to work with!", err);
+	}
+	// reach this? die
+	snprintf(errstr, 2048, "Error %d not translatable. Reached impossible portion of function!", err);
+	return errstr;
+}
+
+char *strerror(int err) {return _strerror(1, err);}
 
 extern void mowgli_log_bootstrap(void);
 extern void mowgli_node_bootstrap(void);
@@ -85,8 +111,6 @@ void aegaeon_react (mowgli_eventloop_t *el,
 
 	// We expect the user to have used [list].
 
-	write(2, "Calling event function...", strlen("Calling event function..."));
-
 	if (tcl_eventfunc != NULL) Tcl_EvalObjEx(ud->interp, tcl_eventfunc, TCL_EVAL_GLOBAL);
 };
 
@@ -117,7 +141,7 @@ int aegaeon_verify_callback (int wavepast, X509_STORE_CTX *context)
 	// was deemed valid by OpenSSL, and a handle to the x509 itself, and
 	// a number explaining the situation.
 	SSL *sslh = X509_STORE_CTX_get_ex_data(context, SSL_get_ex_data_X509_STORE_CTX_idx());
-	
+
 	mowgli_vio_t *vio = SSL_CTX_get_ex_data(context, sslctx_appdata);
 	char *sarg[3];
 	Tcl_Obj *scr = Tcl_DuplicateObj((aegaeon_userdata *)(vio->userdata)->privdata)->verify_script;
