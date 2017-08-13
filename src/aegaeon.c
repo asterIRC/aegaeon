@@ -198,6 +198,7 @@ int aegaeon_verify_callback (int wavepast, X509_STORE_CTX *context)
 
 	mowgli_vio_t *vio = SSL_CTX_get_ex_data(context, sslctx_appdata);
 	char *sarg[3];
+	if (NULL == ((aegaeon_ssldata *)((aegaeon_userdata *)(vio->userdata)->privdata)->verify_script)) return;
 	Tcl_Obj *scr = Tcl_DuplicateObj((aegaeon_ssldata *)((aegaeon_userdata *)(vio->userdata)->privdata)->verify_script);
 
 	sarg[0] = malloc(26);
