@@ -10,11 +10,16 @@ set v [vio_create]
 
 vio_fileevent_readable_set $v [list readStuff $v]
 vio_fileevent_writable_set $v [list logIn $v]
+vio_fileevent_error_set $v [list fileError $v]
 proc readwrap {vp outv maxlen} {
 	upvar 1 $outv outvar
 	set retval [vio_recv $vp $maxlen o o]
 	set outvar $o(o)
 	return $retval
+}
+
+proc fileError {vp errtypestr errstr errcode errop} {
+	puts stdout [format {%s experienced %s error. %s.} $vp $errtypestr $errstr]
 }
 
 proc tellit {} {
@@ -44,7 +49,7 @@ proc readStuff {vp} {
 		puts stdout [format "Read %s bytes from %s: %s" $outbytes $vp $ov]
 	} else {
 		puts stdout [format "Got error %s from %s, exiting" [vio_strerror $vp] $vp]
-		vio_eventloop_detach $vp
+		vio_destroy $vp
 		exit
 	}
 }

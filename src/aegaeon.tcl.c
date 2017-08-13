@@ -8,25 +8,21 @@ if {0} {
 /*
  * Copyright (c) 2017 the management of umbrellix.net
  *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
  *
- *  The above copyright notice and this permission notice shall be included
- *  in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS
- * IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
- * NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
- * PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
- * OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 }
 
@@ -42,6 +38,7 @@ critcl::ccode {
 #include <sys/socket.h>
 #include <openssl/ssl.h>
 #include <openssl/evp.h>
+#include <openssl/bio.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/errno.h>
@@ -80,7 +77,7 @@ critcl::buildrequirement {
 	package require critcl::enum
 }
 
-::critcl::cdefines [list PF_* AF_* IPPROTO_* SOCK_* X509_V_* MOWGLI_* SOMAXCONN]
+::critcl::cdefines [list PF_* AF_* IPPROTO_* SOCK_* X509_V_* MOWGLI_* SOMAXCONN AEGAEON_*]
 
 critcl::cproc csocket {int domain int type int protocol} int {
 	return socket(domain, type, protocol);
@@ -241,11 +238,13 @@ critcl::cproc eventloop_create {} dstring {
 	char *o = Tcl_Alloc(40);
 	memset(o, 0, 40);
 	mowgli_eventloop_t *el = mowgli_eventloop_create();
-	sprintf(o, "0x%lx", el);
+	snprintf(o, 40, "%p", el);
+	addhandle(o);
 	return o;
 }
 
 critcl::cproc eventloop_crank {char* elptrs} void {
+	if (!isvalidhandle(elptrs)) return;
 	unsigned long elptr = strtoul(elptrs, NULL, 16);
 	mowgli_eventloop_t *el = (mowgli_eventloop_t *) elptr;
 
@@ -253,6 +252,7 @@ critcl::cproc eventloop_crank {char* elptrs} void {
 }
 
 critcl::cproc eventloop_fire {char* elptrs} void {
+	if (!isvalidhandle(elptrs)) return;
 	unsigned long elptr = strtoul(elptrs, NULL, 16);
 	mowgli_eventloop_t *el = (mowgli_eventloop_t *) elptr;
 
@@ -263,6 +263,11 @@ critcl::cproc timer_add {Tcl_Interp* interp char* elptrs char* name
                          object script object arg int every} dstring {
 	char *o = Tcl_Alloc(40);
 	memset(o, 0, 40);
+
+	if (!isvalidhandle(elptrs)) {
+		strncpy(o, "0x0", 3);
+		return o;
+	}
 
 	unsigned long elptr = strtoul(elptrs, NULL, 16);
 	mowgli_eventloop_t *el = (mowgli_eventloop_t *) elptr;
@@ -283,7 +288,9 @@ critcl::cproc timer_add {Tcl_Interp* interp char* elptrs char* name
 
 	mowgli_eventloop_timer_t *elt = mowgli_timer_add(el, name,
 	                  &aegaeon_tick, ud, every);
-	sprintf(o, "0x%lx", elt);
+	snprintf(o, 40, "%p", elt);
+
+	addhandle(o);
 	return o;
 }
 
@@ -322,18 +329,110 @@ critcl::cproc vio_create {Tcl_Interp* interp} dstring {
 	ud->write = NULL;
 	ud->error = NULL;
 	mowgli_vio_t *vio = mowgli_vio_create(ud);
-	sprintf(o, "0x%lx", vio);
+	vio->ops->error = &aegaeon_vio_error;
+	snprintf(o, 40, "%p", vio);
+	addhandle(o);
 	return o;
 }
 
-critcl::cproc vio_tls_socket {char* vptrs int family int type int proto} int {
+critcl::cproc tls_get_fp {Tcl_Interp* interp char* x509ptrs int hashtype} object {
+	if (!isvalidhandle(x509ptrs)) {
+		Tcl_Obj *retv = Tcl_NewByteArrayObj("", 0);
+		Tcl_IncrRefCount(retv);
+		return retv;
+	}
+	unsigned long x509ptr = strtoul(x509ptrs, NULL, 16);
+	X509 *x509 = (X509 *)x509ptr;
+	int length, encode;
+	unsigned char *buf, *ptr;
+	EVP_MD* hashfunc = NULL;
+
+	encode = length = 0;
+
+	switch (hashtype) {
+		case AEGAEON_RAWDER:
+			length = i2d_X509(x509, NULL);
+			encode = 0;
+			break;
+#ifndef OPENSSL_NO_MD2
+		case AEGAEON_MD2:
+			length = 16;
+			encode = 1;
+			hashfunc = EVP_md2();
+			break;
+#endif
+#ifndef OPENSSL_NO_MD4
+		case AEGAEON_MD4:
+			length = 16;
+			encode = 1;
+			hashfunc = EVP_md4();
+			break;
+#endif
+#ifndef OPENSSL_NO_MD5
+		case AEGAEON_MD5:
+			length = 16;
+			encode = 1;
+			hashfunc = EVP_md5();
+			break;
+#endif
+#ifndef OPENSSL_NO_SHA1
+		case AEGAEON_SHA1:
+			length = 20;
+			encode = 1;
+			hashfunc = EVP_sha1();
+			break;
+#endif
+#ifndef OPENSSL_NO_SHA256
+		case AEGAEON_SHA224:
+			length = 28;
+			encode = 1;
+			hashfunc = EVP_sha224();
+			break;
+		case AEGAEON_SHA256:
+			length = 32;
+			encode = 1;
+			hashfunc = EVP_sha256();
+			break;
+#endif
+#ifndef OPENSSL_NO_SHA512
+		case AEGAEON_SHA384:
+			length = 48;
+			encode = 1;
+			hashfunc = EVP_sha384();
+			break;
+		case AEGAEON_SHA512:
+			length = 64;
+			encode = 1;
+			hashfunc = EVP_sha512();
+			break;
+#endif
+	}
+
+	if (encode) {
+		buf = Tcl_Alloc(length);
+		X509_digest(x509, hashfunc, buf, &length);
+	} else {
+		buf = Tcl_Alloc(length);
+		ptr = buf;
+		i2d_X509(x509, &ptr);
+	}
+
+	Tcl_Obj *retv = Tcl_NewByteArrayObj(buf, length);
+	Tcl_IncrRefCount(retv);
+	return retv;
+}
+
+critcl::cproc vio_tls_socket {char* vptrs int family int type int proto object vcallback} int {
 #ifndef HAVE_OPENSSL
 	return -255;
 #endif
+	if (!isvalidhandle(vptrs)) return -255;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 	aegaeon_ssldata *verify_script = malloc(sizeof(aegaeon_ssldata));
 	memset(verify_script, 0, sizeof(aegaeon_ssldata));
+
+	verify_script->verify_script = vcallback;
 
 	((aegaeon_userdata *)(vio->userdata))->privdata = (void *)verify_script;
 
@@ -342,12 +441,14 @@ critcl::cproc vio_tls_socket {char* vptrs int family int type int proto} int {
 }
 
 critcl::cproc vio_socket {char* vptrs int family int type int proto} int {
+	if (!isvalidhandle(vptrs)) return -255;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 	return vio->ops->socket(vio, family, type, proto);
 }
 
 critcl::cproc vio_listen {char* vptrs int backlog} int {
+	if (!isvalidhandle(vptrs)) return -255;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 	return vio->ops->listen(vio, backlog);
@@ -410,6 +511,8 @@ critcl::cproc vio_fileevent_error_unset {char* vptrs} void {
 };
 
 critcl::cproc vio_eventloop_attach {char* vptrs char* elptrs} void {
+	if (!isvalidhandle(vptrs)) return;
+	if (!isvalidhandle(elptrs)) return;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 
@@ -422,6 +525,7 @@ critcl::cproc vio_eventloop_attach {char* vptrs char* elptrs} void {
 }
 
 critcl::cproc vio_destroy {char* vptrs} void {
+	if (!isvalidhandle(vptrs)) return;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 	mowgli_vio_destroy(vio);
@@ -429,6 +533,8 @@ critcl::cproc vio_destroy {char* vptrs} void {
 }
 
 critcl::cproc timer_destroy {char* elptrs char* tptrs} void {
+	if (!isvalidhandle(elptrs)) return;
+	if (!isvalidhandle(tptrs)) return;
 	unsigned long elptr = strtoul(elptrs, NULL, 16);
 	mowgli_eventloop_t *el = (mowgli_eventloop_t *) elptr;
 
@@ -440,6 +546,7 @@ critcl::cproc timer_destroy {char* elptrs char* tptrs} void {
 }
 
 critcl::cproc vio_eventloop_detach {char* vptrs} void {
+	if (!isvalidhandle(vptrs)) return;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 	mowgli_vio_eventloop_detach(vio);
@@ -450,6 +557,7 @@ critcl::cproc vio_connect {char* vptrs char* hostname char* servname
                        int hint_flags int hint_family int hint_socktype
                        int hint_protocol} int {
 	//We have to somehow convert this mess of stuff into an ops->connect() call.
+	if (!isvalidhandle(vptrs)) return -255;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 #ifdef HAVE_OPENSSL
@@ -507,6 +615,7 @@ critcl::cproc vio_bind {char* vptrs char* hostname char* servname
                        int hint_flags int hint_family int hint_socktype
                        int hint_protocol} int {
 	//We have to somehow convert this mess of stuff into an ops->bind() call.
+	if (!isvalidhandle(vptrs)) return -255;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 #ifdef HAVE_OPENSSL
@@ -560,6 +669,7 @@ critcl::cproc vio_bind {char* vptrs char* hostname char* servname
 
 critcl::cproc vio_recv {Tcl_Interp* interp char* vptrs int maxlen
                      object name1 object name2} int {
+	if (!isvalidhandle(vptrs)) return -255;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 
@@ -597,20 +707,21 @@ critcl::cproc vio_recv {Tcl_Interp* interp char* vptrs int maxlen
 }
 
 critcl::cproc vio_send {Tcl_Interp* interp char* vptrs char* stringtosend} int {
+	if (!isvalidhandle(vptrs)) return -255;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 
 	int len, error;
 
-	error = vio->ops->write(vio, stringtosend, strlen(stringtosend));
-	return (error == -1) ? vio->error.code : error;
+	return vio->ops->write(vio, stringtosend, strlen(stringtosend));
 }
 
 critcl::cproc vio_strerror {char* vptrs} vstring {
+	if (!isvalidhandle(vptrs)) return strerror(EINVAL);
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 
-	return strerror(vio->error.code);
+	return vio->error.string;
 }
 
 # Lifted from core/bootstrap.c because we seem to need it

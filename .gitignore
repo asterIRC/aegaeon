@@ -1,2 +1,4 @@
 lib
 critflags.tcl
+*.core
+ktrace.out
