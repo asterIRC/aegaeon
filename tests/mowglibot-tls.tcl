@@ -54,10 +54,19 @@ proc readStuff {vp} {
 	}
 }
 
+proc alwaysAllow {vp wavepast cert error} {
+	puts stdout "$vp $wavepast $cert $error"
+	catch {
+	puts stdout [format "SHA-512 print of certificate in %s is %s" ${cert} [binary encode hex [tls_get_fp ${cert} $::AEGAEON_SHA512]]]
+	} errval
+	puts stdout $errval
+	return 1
+}
+
 set loggedin 0
 
-puts stdout [vio_socket $v $AF_INET $SOCK_STREAM $IPPROTO_SCTP]
-puts stdout [set theError [vio_connect $v "127.0.0.1" "6667" 0 $AF_INET $SOCK_STREAM 0]]
+puts stdout [vio_tls_socket $v $AF_INET $SOCK_STREAM $IPPROTO_TCP [list alwaysAllow $v]]
+puts stdout [set theError [vio_connect $v "127.0.0.1" "6697" 0 $AF_INET $SOCK_STREAM 0]]
 
 if {($theError >> 8) == 0} {vio_eventloop_attach $v $el} {puts stdout {Unable to connect!}; exit}
 

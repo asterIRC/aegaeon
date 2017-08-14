@@ -28,8 +28,8 @@ if {0} {
 
 critcl::source ../critflags.tcl
 
-critcl::cflags -g -fPIC -DPIC -std=gnu99 -I /usr/home/hadron/src/aegaeon/libmowgli-2/run/include
-critcl::ldflags -lssl
+critcl::cflags -g -fPIC -DPIC -std=gnu99 -I /usr/home/hadron/src/aegaeon/libmowgli-2/run/include -O0 -g
+critcl::ldflags -lssl -L/usr/lib -L/usr/local/lib
 
 critcl::cheaders /usr/home/hadron/src/aegaeon/libmowgli-2/run/include
 
@@ -64,6 +64,16 @@ typedef struct {
 	void *privdata; // For the timer, is an int* 1 if the timer was once
 	                // and 0 otherwise
 } aegaeon_userdata;
+
+#define AEGAEON_MD2 1
+#define AEGAEON_MD4 2
+#define AEGAEON_MD5 3
+#define AEGAEON_SHA1 4
+#define AEGAEON_SHA224 5
+#define AEGAEON_SHA256 6
+#define AEGAEON_SHA384 7
+#define AEGAEON_SHA512 8
+#define AEGAEON_RAWDER 9
 
 #include <aegaeon.c>
 mowgli_vio_evops_t aegaeon_evops = {
@@ -198,7 +208,11 @@ critcl::cproc crecv {Tcl_Interp* interp int fd char* stopchars int maxlen
 		i += readbytes;
 	} while(0);
 
-	Tcl_ObjSetVar2(interp, name1, name2, Tcl_NewByteArrayObj(output, i), 0);
+	Tcl_Obj *outobj = Tcl_NewByteArrayObj(output, i);
+
+	//Tcl_IncrRefCount(outobj); // may be unneeded
+
+	Tcl_ObjSetVar2(interp, name1, name2, outobj, 0);
 
 	return (error == 0) ? 0 :
 			(error == -1) ? 1 :
@@ -337,7 +351,7 @@ critcl::cproc vio_create {Tcl_Interp* interp} dstring {
 
 critcl::cproc tls_get_fp {Tcl_Interp* interp char* x509ptrs int hashtype} object {
 	if (!isvalidhandle(x509ptrs)) {
-		Tcl_Obj *retv = Tcl_NewByteArrayObj("", 0);
+		Tcl_Obj *retv = Tcl_NewByteArrayObj(strdup(""), 0);
 		Tcl_IncrRefCount(retv);
 		return retv;
 	}
@@ -423,9 +437,6 @@ critcl::cproc tls_get_fp {Tcl_Interp* interp char* x509ptrs int hashtype} object
 }
 
 critcl::cproc vio_tls_socket {char* vptrs int family int type int proto object vcallback} int {
-#ifndef HAVE_OPENSSL
-	return -255;
-#endif
 	if (!isvalidhandle(vptrs)) return -255;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
@@ -433,11 +444,31 @@ critcl::cproc vio_tls_socket {char* vptrs int family int type int proto object v
 	memset(verify_script, 0, sizeof(aegaeon_ssldata));
 
 	verify_script->verify_script = vcallback;
+	Tcl_IncrRefCount(vcallback);
 
 	((aegaeon_userdata *)(vio->userdata))->privdata = (void *)verify_script;
 
 	mowgli_vio_openssl_setssl(vio, NULL, NULL);
-	if (vio->ops->socket(vio, family, type, proto) != 0) return 1;
+	mowgli_vio_ops_set_op(vio->ops, connect, aegaeon_mowgli_vio_openssl_connect);
+	return vio->ops->socket(vio, family, type, proto);
+}
+
+critcl::cproc vio_tls_our_cert {char* vptrs char* certpath char* keypath} int {
+	if (!isvalidhandle(vptrs)) return -255;
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+
+	if (((aegaeon_ssldata *)((aegaeon_userdata *)(vio->userdata))->privdata)->verify_script == NULL) return -255; // Invalid operation
+	// on non-SSL socket
+
+	mowgli_ssl_connection_t *connection = (mowgli_ssl_connection_t *)vio->privdata;
+
+	if (strlen(keypath) == 0) keypath = certpath;
+
+	connection->settings.cert_path = certpath;
+	connection->settings.privatekey_path = keypath;
+
+	return 0;
 }
 
 critcl::cproc vio_socket {char* vptrs int family int type int proto} int {
@@ -560,9 +591,7 @@ critcl::cproc vio_connect {char* vptrs char* hostname char* servname
 	if (!isvalidhandle(vptrs)) return -255;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
-#ifdef HAVE_OPENSSL
-	SSL *sslh;
-#endif
+	SSL_CTX *sslctx; SSL *sslh;
 
 	mowgli_vio_sockaddr_t *vsockaddr = malloc(sizeof(mowgli_vio_sockaddr_t));
 
@@ -589,17 +618,6 @@ critcl::cproc vio_connect {char* vptrs char* hostname char* servname
 			continue;
 		}
 
-#ifdef HAVE_OPENSSL
-
-		if ((sslh = mowgli_vio_openssl_getsslhandle(vio)) != NULL) {
-			if (sslctx_appdata == -2) SSL_get_new_index(); //Not set yet
-			// Set to verify peer.
-			SSL_set_ex_data(sslh, sslctx_appdata, (void *)vio);
-			SSL_set_verify(sslh, SSL_VERIFY_PEER, &aegaeon_verify_callback);
-		}
-
-#endif
-
 		break;
 	}
 
@@ -618,9 +636,7 @@ critcl::cproc vio_bind {char* vptrs char* hostname char* servname
 	if (!isvalidhandle(vptrs)) return -255;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
-#ifdef HAVE_OPENSSL
-	SSL_CTX *ctx;
-#endif
+	SSL *sslh;
 
 	mowgli_vio_sockaddr_t vsockaddr;
 
@@ -643,18 +659,6 @@ critcl::cproc vio_bind {char* vptrs char* hostname char* servname
 		if ((connerror = vio->ops->bind(vio, &vsockaddr)) != 0) {
 			continue;
 		}
-
-#ifdef HAVE_OPENSSL
-
-		if ((ctx = mowgli_vio_openssl_getsslcontext(vio)) != NULL) {
-			if (sslctx_appdata == -2) SSL_CTX_get_new_index(); //Not set yet
-			// Set to verify peer. Script set will decide whether
-			// to wave past.
-			SSL_CTX_set_ex_data(ctx, sslctx_appdata, (void *)vio);
-			SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, &aegaeon_verify_callback);
-		}
-
-#endif
 
 		break;
 	}

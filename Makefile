@@ -22,4 +22,4 @@ aegaeon-pkg:
 	@echo "critcl::cflags ${CRITFLAGS}" > critflags.tcl
 	@echo "critcl::cheaders ${MOWGLI_PREFIX}/include" >> critflags.tcl
 	@echo "critcl::ldflags -L${MOWGLI_PREFIX}/lib ${MOWGLI_PREFIX}/lib/libmowgli-2.a" >> critflags.tcl
-	critcl -force ${CRITFLAGS} ${CRITLDFLAGS} -pkg aegaeon src/aegaeon.tcl.c
+	critcl -debug all -force ${CRITFLAGS} ${CRITLDFLAGS} -pkg aegaeon src/aegaeon.tcl.c
