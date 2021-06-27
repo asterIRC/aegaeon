@@ -35,9 +35,7 @@ timer_add $el ticktock timeit ignored 1
 proc logIn {vp} {
 	global loggedin
 	if {$loggedin == 0} {
-		vio_send $vp "PASS areallydumbpassword\r\n"
-		vio_send $vp "NICK Mowglibot\r\n"
-		vio_send $vp "USER hi * 8 :A bot that does nothing\r\n"
+		vio_send $vp "\r\n"
 		set loggedin 1
 	}
 }
@@ -66,7 +64,8 @@ proc alwaysAllow {vp wavepast cert error} {
 set loggedin 0
 
 puts stdout [vio_tls_socket $v $AF_INET $SOCK_STREAM $IPPROTO_TCP [list alwaysAllow $v]]
-puts stdout [set theError [vio_connect $v "127.0.0.1" "6697" 0 $AF_INET $SOCK_STREAM 0]]
+puts stdout [set theError [vio_connect $v "127.0.0.1" "105" 0 $AF_INET $SOCK_STREAM 0]]
+puts stdout [vio_sockaddr_info $v]
 
 if {($theError >> 8) == 0} {vio_eventloop_attach $v $el} {puts stdout {Unable to connect!}; exit}
 

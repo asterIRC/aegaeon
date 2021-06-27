@@ -87,7 +87,7 @@ critcl::buildrequirement {
 	package require critcl::enum
 }
 
-::critcl::cdefines [list PF_* AF_* IPPROTO_* SOCK_* X509_V_* MOWGLI_* SOMAXCONN AEGAEON_*]
+::critcl::cdefines [list E* PF_* AF_* IPPROTO_* SOCK_* X509_V_* MOWGLI_* SOMAXCONN AEGAEON_*]
 
 critcl::cproc csocket {int domain int type int protocol} int {
 	return socket(domain, type, protocol);
@@ -349,6 +349,57 @@ critcl::cproc vio_create {Tcl_Interp* interp} dstring {
 	return o;
 }
 
+critcl::cproc vio_sockaddr_info {char* vptrs} object {
+	if (!isvalidhandle(vptrs)) {
+		Tcl_Obj *retv = Tcl_NewByteArrayObj(strdup(""), 0);
+		Tcl_IncrRefCount(retv);
+		return retv;
+	}
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+	Tcl_Obj *objvec[2];
+
+	int err;
+
+	mowgli_vio_sockdata_t *vsockdata = malloc(sizeof(mowgli_vio_sockdata_t));
+	if ((err = mowgli_vio_sockaddr_info(&vio->addr, vsockdata)) != 0) {
+		char *port = strerror(errno);
+
+		Tcl_Obj *retv = Tcl_NewByteArrayObj(port, strlen(port));
+		Tcl_IncrRefCount(retv);
+		return retv;
+	}
+	objvec[0] = Tcl_NewStringObj(strdup(vsockdata->host), strlen(vsockdata->host));
+	char port[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+	snprintf(&port, 8, "%hu", vsockdata->port);
+	objvec[1] = Tcl_NewStringObj(strdup(&port), strlen(&port));
+
+	Tcl_Obj *outlist = Tcl_NewListObj(2, objvec);
+	Tcl_IncrRefCount(outlist);
+	return outlist;
+}
+
+critcl::cproc vio_accept {Tcl_Interp* interp char* vptrs} dstring {
+	if (!isvalidhandle(vptrs)) return -255;
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+	char *o = Tcl_Alloc(40);
+	memset(o, 0, 40);
+	aegaeon_userdata *ud;
+	ud = malloc(sizeof(aegaeon_userdata));
+	memset(ud, 0, sizeof(aegaeon_userdata));
+	ud->interp = interp;
+	ud->read = NULL;
+	ud->write = NULL;
+	ud->error = NULL;
+	mowgli_vio_t *newvio = mowgli_vio_create(ud);
+	vio->ops->accept(vio, newvio);
+	newvio->ops->error = &aegaeon_vio_error;
+	snprintf(o, 40, "%p", newvio);
+	addhandle(o);
+	return o;
+}
+
 critcl::cproc tls_get_fp {Tcl_Interp* interp char* x509ptrs int hashtype} object {
 	if (!isvalidhandle(x509ptrs)) {
 		Tcl_Obj *retv = Tcl_NewByteArrayObj(strdup(""), 0);
@@ -485,6 +536,13 @@ critcl::cproc vio_listen {char* vptrs int backlog} int {
 	return vio->ops->listen(vio, backlog);
 }
 
+critcl::cproc vio_reuseaddr {char* vptrs} int {
+	if (!isvalidhandle(vptrs)) return -255;
+	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
+	return vio->ops->reuseaddr(vio);
+}
+
 # vio_fileevent_readable/writable - only part of the tcl part
 
 critcl::cproc vio_fileevent_readable_set {char* vptrs object cb} void {
@@ -558,6 +616,7 @@ critcl::cproc vio_eventloop_attach {char* vptrs char* elptrs} void {
 critcl::cproc vio_destroy {char* vptrs} void {
 	if (!isvalidhandle(vptrs)) return;
 	unsigned long vptr = strtoul(vptrs, NULL, 16);
+	delhandle(vptrs);
 	mowgli_vio_t *vio = (mowgli_vio_t *) vptr;
 	mowgli_vio_destroy(vio);
 	return;
@@ -729,6 +788,10 @@ critcl::cproc vio_strerror {char* vptrs} vstring {
 }
 
 # Lifted from core/bootstrap.c because we seem to need it
+
+critcl::cproc mowgli_kill_threading {} void {
+	mowgli_thread_set_policy(MOWGLI_THREAD_POLICY_DISABLED);
+}
 
 critcl::cproc mowgli_bootstrap {} void {
 	static bool bootstrapped = 0;

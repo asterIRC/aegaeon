@@ -1,6 +1,10 @@
-# Aegaeon - CriTCL library for using mowgli's event loop and VIO abstraction in Tcl apps
+# Aegaeon
 
-requires tcl 8.6.
+A CriTCL library for using mowgli's event loop and VIO abstraction in Tcl apps.
+
+It's not very good.
+
+It requires tcl 8.6.
 
 ## Installation:
 

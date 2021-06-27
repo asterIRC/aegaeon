@@ -163,6 +163,7 @@ void aegaeon_react (mowgli_eventloop_t *el,
 	}
 
 	// We expect the user to have used [list].
+	//write(2, "Calling event function\n", strlen("Calling event function\n"));
 
 	if (tcl_eventfunc != NULL) Tcl_EvalObjEx(ud->interp, tcl_eventfunc, TCL_EVAL_GLOBAL);
 };
@@ -240,8 +241,8 @@ int aegaeon_verify_callback (int wavepast, X509_STORE_CTX *context)
 
 void aegaeon_mowgli_log_cb (const char *logline)
 {
-	//write(2, logline, strlen(logline));
-	//write(2, "\r\n", 2);
+	write(2, logline, strlen(logline));
+	write(2, "\r\n", 2);
 	return;
 }
 
